@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -47,7 +46,7 @@ func runDaemon() (result int) {
 		report(err)
 		return 1
 	}
-	lock, err := os.OpenFile(filepath.Join(cfg.Dir, "daemon.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := os.OpenFile(lockPath(cfg.Dir, cfg.Name), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		report(err)
 		return 1
@@ -60,15 +59,15 @@ func runDaemon() (result int) {
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	// A daemon killed with SIGKILL can leave its SSH child alive. Under the
 	// exclusive lock, close that old master before replacing its control socket.
-	controlPath := filepath.Join(cfg.Dir, "ssh.sock")
-	if _, err := os.Stat(controlPath); err == nil {
+	cp := controlPath(cfg.Dir, cfg.Name)
+	if _, err := os.Stat(cp); err == nil {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		exec.CommandContext(cleanupCtx, cfg.SSH, "-S", controlPath, "-O", "exit", "--", cfg.Host).Run()
+		exec.CommandContext(cleanupCtx, cfg.SSH, "-S", cp, "-O", "exit", "--", cfg.Host).Run()
 		cleanupCancel()
 	}
-	socket := filepath.Join(cfg.Dir, "service.sock")
+	socket := socketPath(cfg.Dir, cfg.Name)
 	os.Remove(socket)
-	os.Remove(filepath.Join(cfg.Dir, "ssh.sock"))
+	os.Remove(cp)
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		report(err)
@@ -83,7 +82,7 @@ func runDaemon() (result int) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer cancel()
 	d := &daemon{cfg: cfg, ctx: ctx, cancel: cancel, info: connectionInfo{
-		Host: cfg.Host, User: cfg.User, Port: cfg.Port, PID: os.Getpid(), StartedAt: time.Now().UTC(),
+		Name: cfg.Name, Host: cfg.Host, User: cfg.User, Port: cfg.Port, PID: os.Getpid(), StartedAt: time.Now().UTC(),
 	}}
 	acceptDone := make(chan struct{})
 	go func() {
@@ -115,7 +114,7 @@ func runDaemon() (result int) {
 	}
 	args = append(args, "--", cfg.Host)
 	master := exec.CommandContext(ctx, cfg.SSH, args...)
-	master.Env = append(os.Environ(), "SSH_ASKPASS="+exe, "SSH_ASKPASS_REQUIRE=force", "REMOTE_SHELL_ASKPASS=1", "REMOTE_SHELL_DIR="+cfg.Dir, "DISPLAY=remote-shell:0")
+	master.Env = append(os.Environ(), "SSH_ASKPASS="+exe, "SSH_ASKPASS_REQUIRE=force", "REMOTE_SHELL_ASKPASS=1", "REMOTE_SHELL_DIR="+cfg.Dir, "REMOTE_SHELL_NAME="+cfg.Name, "DISPLAY=remote-shell:0")
 	var diagnostics boundedBuffer
 	master.Stderr = &diagnostics
 	if err := master.Start(); err != nil {
@@ -124,7 +123,7 @@ func runDaemon() (result int) {
 	}
 	masterDone := make(chan struct{})
 	go func() { master.Wait(); close(masterDone) }()
-	defer func() { cancel(); <-masterDone; os.Remove(filepath.Join(cfg.Dir, "ssh.sock")) }()
+	defer func() { cancel(); <-masterDone; os.Remove(controlPath(cfg.Dir, cfg.Name)) }()
 	timer := time.NewTimer(cfg.Timeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -141,7 +140,7 @@ func runDaemon() (result int) {
 			report(fmt.Errorf("SSH 连接超时: %s", diagnostics.String()))
 			return 1
 		case <-ticker.C:
-			if _, err := os.Stat(filepath.Join(cfg.Dir, "ssh.sock")); err == nil {
+			if _, err := os.Stat(controlPath(cfg.Dir, cfg.Name)); err == nil {
 				goto connected
 			}
 		}
@@ -297,7 +296,8 @@ func (d *daemon) handle(conn net.Conn) {
 }
 
 func askpass() int {
-	p, err := exchange("password")
+	name := os.Getenv("REMOTE_SHELL_NAME")
+	p, err := exchangeNamed("password", name)
 	if err != nil {
 		return 1
 	}

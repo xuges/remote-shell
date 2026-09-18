@@ -32,7 +32,12 @@ def main():
     password = secrets.token_urlsafe(24)
     temp = Path(tempfile.mkdtemp(prefix="rsh-test-", dir="/tmp"))
     temp.chmod(0o755)
-    env = dict(os.environ, REMOTE_SHELL_DIR=str(temp / "run"))
+    # Isolate both the runtime dir and config discovery (HOME) from the
+    # invoking user so a real ~/.config/remote-shell/config.toml does not
+    # interfere with the legacy single-connection test flow.
+    home = temp / "home"
+    home.mkdir()
+    env = dict(os.environ, REMOTE_SHELL_DIR=str(temp / "run"), HOME=str(home))
     env.pop("REMOTE_SHELL_PASSWORD", None)
     daemon_pid = None
     account_created = False
@@ -48,6 +53,11 @@ def main():
         if check and p.returncode:
             raise AssertionError(f"{name}: exit {p.returncode}: {p.stderr.decode(errors='replace')}")
         return p
+
+    # remote-shell requires an explicit -conn; the single remote under
+    # test is the legacy default connection.
+    def rs(*args, **kw):
+        return cli("remote-shell", "-conn", "default", *args, **kw)
 
     def start(*auth, check=True):
         nonlocal daemon_pid
@@ -123,36 +133,44 @@ LogLevel VERBOSE
         assert info["connected"] and info["user"] == account
         assert info["os"] == "Linux" and info["os_version"] and info["kernel"]
         assert info["shell"] == "/bin/sh" and info["architecture"]
+        assert info["default_shell"] == "/bin/sh"
         assert start(f"-password={password}", check=False).returncode != 0
+        # remote-shell requires an explicit -conn.
+        missing = cli("remote-shell", "true", check=False)
+        assert missing.returncode != 0 and "-conn" in missing.stderr.decode(errors="replace")
+        unknown = cli("remote-shell", "-conn", "nope", "true", check=False)
+        assert unknown.returncode != 0
+        # Legacy -connection spelling still works.
+        assert cli("remote-shell", "-connection", "default", "true").returncode == 0
         print("PASS password login, metadata and duplicate start", flush=True)
 
         args = ["", "a b", "one'two", '"quoted"', "$(echo unsafe)", "; exit 99", "中文", "a\nb"]
-        result = cli("remote-shell", "printf", "%s\\0", *args)
+        result = rs("printf", "%s\\0", *args)
         assert result.stdout == b"\0".join(a.encode() for a in args) + b"\0"
-        result = cli("remote-shell", "-c", "printf out; printf err >&2; exit 42", check=False)
+        result = rs("-c", "printf out; printf err >&2; exit 42", check=False)
         assert (result.returncode, result.stdout, result.stderr) == (42, b"out", b"err")
-        assert cli("remote-shell", "-c", "printf hello | tr a-z A-Z").stdout == b"HELLO"
+        assert rs("-c", "printf hello | tr a-z A-Z").stdout == b"HELLO"
         blob = bytes(range(256)) * 8192
-        assert cli("remote-shell", "cat", input=blob).stdout == blob
-        assert cli("remote-shell", "cat", input=b"").stdout == b""
+        assert rs("cat", input=blob).stdout == blob
+        assert rs("cat", input=b"").stdout == b""
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda i: cli("remote-shell", "printf", "%s", str(i)).stdout, range(8)))
+            results = list(pool.map(lambda i: rs("printf", "%s", str(i)).stdout, range(8)))
         assert results == [str(i).encode() for i in range(8)]
         print("PASS quoting, raw shell, exit code, binary stdin/stdout and concurrent commands", flush=True)
 
         # Observe output before remote process exits: streaming must be live.
-        live = subprocess.Popen([str(bins / "remote-shell"), "-c", "printf ready; sleep 2; printf done"],
+        live = subprocess.Popen([str(bins / "remote-shell"), "-conn", "default", "-c", "printf ready; sleep 2; printf done"],
                                 env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         assert live.stdout.read(5) == b"ready" and live.poll() is None
         assert live.communicate(timeout=6)[0] == b"done" and live.returncode == 0
 
-        canceled = subprocess.Popen([str(bins / "remote-shell"), "sleep", "30"], env=env,
+        canceled = subprocess.Popen([str(bins / "remote-shell"), "-conn", "default", "sleep", "30"], env=env,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         time.sleep(0.3)
         canceled.send_signal(signal.SIGINT)
         canceled.communicate(timeout=5)
         assert canceled.returncode != 0
-        assert cli("remote-shell", "printf", "still-alive").stdout == b"still-alive"
+        assert rs("printf", "still-alive").stdout == b"still-alive"
         stop()
         start(f"-identity={temp}/identity")
         print("PASS streaming, client interruption, stop/restart and key login", flush=True)
@@ -181,12 +199,12 @@ LogLevel VERBOSE
         time.sleep(0.2)
         disconnected = cli("remote-shell-info", "-json", check=False)
         assert disconnected.returncode == 1 and not json.loads(disconnected.stdout)["connected"]
-        assert cli("remote-shell", "true", check=False).returncode == 255
+        assert rs("true", check=False).returncode == 255
         stop()
         # A stale socket path after a crash must not prevent restarting.
         (temp / "run/service.sock").write_text("stale")
         start(f"-identity={temp}/identity")
-        active = subprocess.Popen([str(bins / "remote-shell"), "sleep", "30"], env=env,
+        active = subprocess.Popen([str(bins / "remote-shell"), "-conn", "default", "sleep", "30"], env=env,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         time.sleep(0.3)
         stop()

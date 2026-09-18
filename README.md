@@ -2,52 +2,118 @@
 
 用 Go 和本机 OpenSSH 执行远程命令。启动一次后台服务，后续命令复用同一条 SSH 连接；远端无需安装代理或本项目程序。
 
-第一版支持本机 Linux/macOS、远端 POSIX 兼容 Shell（如 sh、bash、zsh）。需要本机 Go 1.22+（编译时）和 OpenSSH 8.9+，远端开启 SSH，并提供常见的 `uname`、`hostname`、`id` 工具。Go 代码只依赖标准库。真实 SSH 集成测试在 Linux 上验证，macOS 仅验证交叉编译。
+`remote-shell` 本身不做命令解释或兼容层——所有命令都原样发送到远端，由远端的默认 Shell 执行。`remote-shell-info` 在启动和查询时自动探测远端操作系统、Shell 类型等信息，供脚本和 AI 判断远端环境后选用正确的命令。本机需要 Go 1.22+（编译时）和 OpenSSH 8.9+；远端需要开启 SSH 服务。Go 代码只依赖标准库。真实 SSH 集成测试在 Linux 上验证，macOS 仅验证交叉编译。
 
 ## 构建和使用
 
 ```sh
 make build
 export PATH="$PWD/bin:$PATH"
+```
 
+### 单连接（旧模式，向后兼容）
+
+```sh
 start-remote-shell -host=192.168.1.10 -user=root -password='your-password'
 remote-shell ls -la /tmp
 remote-shell-info
-remote-shell-info -json
 stop-remote-shell
 ```
 
-`start-remote-shell` 在 SSH 登录成功且取得系统信息后返回，后台服务继续运行。重复启动会报错；切换远端时先停止已有服务。`stop-remote-shell` 会结束连接和正在运行的本地 SSH 命令进程，并等待服务清理完成。
+### 多连接（TOML 配置文件）
 
-也支持环境变量提供密码，以及私钥、ssh-agent 或默认 SSH 配置中的密钥：
+在 `~/.config/remote-shell/config.toml`（或 `./remote-shell.toml`）中定义多个连接：
 
-```sh
-REMOTE_SHELL_PASSWORD='your-password' start-remote-shell -host=192.168.1.10 -user=root
-start-remote-shell -host=192.168.1.10 -user=root -port=2222 -identity="$HOME/.ssh/id_ed25519"
-start-remote-shell -host=my-server
+```toml
+[connections.prod]
+host = "192.168.1.10"
+user = "root"
+password = "your-password"
+
+[connections.win]
+host = "10.0.0.5"
+user = "admin"
+password = "win-password"
+shell = "powershell"          # 可选：显式指定 "cmd" 或 "powershell"，不指定则自动探测
+
+[connections.staging]
+host = "staging.example.com"
+user = "deploy"
+identity = "~/.ssh/deploy_key"
+timeout = "30s"
 ```
 
-密码优先级为 `-password` > `REMOTE_SHELL_PASSWORD`；两者都未提供时使用非交互密钥认证。已加密的私钥请先用 `ssh-add` 加载到 ssh-agent。提供密码时会使用密码或单次 keyboard-interactive 认证，不支持需要多个不同答案的 MFA。
+启动和操作：
 
-`-host` 支持 SSH config 别名，未指定 `-user` 时使用 SSH 的用户配置。端口由 `-port` 指定，默认固定为 22。`-timeout=20s` 控制 SSH 建连等待时间；随后系统信息探测最多等待 10 秒。
+```sh
+# 自动选择（配置文件仅一个连接时）
+start-remote-shell
+
+# 指定连接名称
+start-remote-shell -conn prod
+start-remote-shell -conn win
+
+# 启动所有连接
+start-remote-shell --all
+
+# 执行命令（需指定连接）
+remote-shell -conn prod ls -la /tmp
+remote-shell -conn win -c 'powershell -NoProfile -Command "Get-Process"'
+
+# 查询状态
+remote-shell-info -conn prod
+remote-shell-info -all          # 列出所有运行中的连接
+remote-shell-info -all -json    # JSON 格式
+
+# 停止
+stop-remote-shell -conn prod
+stop-remote-shell -all          # 停止所有连接
+```
+
+配置文件查找顺序：`-config PATH` > `$REMOTE_SHELL_CONFIG` > `~/.config/remote-shell/config.toml` > `./remote-shell.toml`。密码可明文写在 TOML 中（本机可信环境），也可通过 `-password` 或 `REMOTE_SHELL_PASSWORD` 环境变量提供。CLI 参数优先于配置文件中的值。
+
+### Windows 远端
+
+远端 Windows 需要启用 OpenSSH Server（`Add-WindowsCapability OpenSSH.Server~~~~0.0.1.0`）。Windows OpenSSH 默认 Shell 是 `cmd.exe`，但部分服务器配置为 `powershell.exe`。`remote-shell-info` 会自动探测远端默认 Shell 类型（`cmd` 或 `powershell`），`shell` 和 `default_shell` 字段均为该值。也可在 TOML 中用 `shell` 字段显式指定，跳过自动探测：
+
+```toml
+[connections.win]
+host = "10.0.0.5"
+user = "admin"
+shell = "powershell"   # 或 "cmd"
+```
+
+由于 `remote-shell` 不做命令兼容层，普通参数模式（`remote-shell ls -la`）的 POSIX Shell 引号语法在 Windows 下不适用。Windows 远端应始终使用 `-c` 模式，由调用方负责编写目标 Shell 的正确语法：
+
+```sh
+# PowerShell
+remote-shell -conn win -c 'powershell -NoProfile -Command "Get-Process"'
+
+# cmd.exe
+remote-shell -conn win -c 'dir C:\'
+
+# 非 -c 模式会自动检测 Windows 远端并报错提示
+```
 
 ## 命令和数据流
+
+`remote-shell` 执行命令时必须用 `-conn` 指定连接名称（不再隐式使用旧模式的默认连接）。`-connection` 保留为 `-conn` 的全称别名。
 
 普通模式保留每个参数的边界，参数里的空格、引号、美元符号不会被远端再次当作 Shell 语法执行：
 
 ```sh
-remote-shell printf '%s\n' 'hello world' '$HOME'
-printf 'hello\n' | remote-shell cat
-remote-shell cat /var/log/app.log > app.log
-remote-shell -c 'printf error >&2; exit 42'
+remote-shell -conn prod printf '%s\n' 'hello world' '$HOME'
+printf 'hello\n' | remote-shell -conn prod cat
+remote-shell -conn prod cat /var/log/app.log > app.log
+remote-shell -conn prod -c 'printf error >&2; exit 42'
 echo "$?"  # 42
 ```
 
 需要远端展开变量、通配符、管道或重定向时使用 `-c`，用本机的单引号保护完整表达式：
 
 ```sh
-remote-shell -c 'cd /var/log && ls -lh *.log | head'
-remote-shell -c 'echo "$HOME"; uname -a'
+remote-shell -conn prod -c 'cd /var/log && ls -lh *.log | head'
+remote-shell -conn prod -c 'echo "$HOME"; uname -a'
 ```
 
 标准输入、标准输出和标准错误以数据块实时转发，支持二进制数据；stdout 与 stderr 独立保留，但不保证两者之间的全局顺序。远端正常退出码原样返回，SSH 传输失败使用 255，本地参数或服务错误使用非零退出码。多个客户端可以并发执行命令，并发数量受 SSH 服务端的 `MaxSessions` 限制。
@@ -56,7 +122,9 @@ remote-shell -c 'echo "$HOME"; uname -a'
 
 ## 状态和生命周期
 
-`remote-shell-info` 显示连接状态、用户名、地址、系统发行版、内核、架构、主机名、登录 Shell 路径、本地服务 PID 和启动时间。`-json` 输出相同信息，便于脚本使用。系统发行版优先读取远端 `/etc/os-release`，否则显示 `uname -s`。
+`remote-shell-info` 显示连接状态、用户名、地址、系统发行版、内核、架构、主机名、远端执行命令所用的默认 Shell、本地服务 PID 和启动时间。`-json` 输出相同信息，便于脚本使用。
+
+探测逻辑：先尝试 POSIX 方式（`uname`、`hostname`、`id`；系统版本在 Linux 取 `/etc/os-release`，macOS 取 `sw_vers -productName/-productVersion`），适用于 Linux 和 macOS。若失败，自动回退到 PowerShell 探测（`$env:OS`、`Get-CimInstance`、`$PSVersionTable`），适用于 Windows 远端。两者输出格式统一为 7 字段 NUL 分隔，同一解析器处理。`default_shell` 表示远端执行 `-c` 命令时所用的默认 Shell：POSIX 下即登录 Shell（如 `/bin/bash`、`/bin/zsh`），Windows 下为 `cmd` 或 `powershell`（额外探测 `cmd.exe` 还是 `powershell.exe`）。TOML `shell` 字段可跳过 Windows 自动探测，直接指定 `cmd` 或 `powershell`。探测失败时报告最初的错误信息。
 
 查询状态会执行一次最长 5 秒的远端探测，避免只根据本地进程存在判断连接正常。连接断开时状态查询返回 1，并尽可能附带上次已取得的系统信息；执行命令返回 255。后台 SSH 每 5 秒发送保活，连续两次无应答后会断开。第一版不自动重连，恢复方式为：
 
@@ -65,7 +133,9 @@ stop-remote-shell
 start-remote-shell -host=192.168.1.10 -user=root
 ```
 
-运行目录默认是系统临时目录下的 `remote-shell-<uid>`，包含本地服务 socket、SSH 复用 socket、进程锁和 `daemon.log`。可设置 `REMOTE_SHELL_DIR` 修改路径，所有客户端须使用相同值；绝对路径最多 75 字节，以满足 Unix socket 路径限制。这只是运行路径设置，第一版不提供远端连接命名和隔离管理。
+运行目录默认是系统临时目录下的 `remote-shell-<uid>`，包含本地服务 socket、SSH 复用 socket、进程锁和 `daemon.log`。可设置 `REMOTE_SHELL_DIR` 修改路径，所有客户端须使用相同值；绝对路径最多 75 字节，以满足 Unix socket 路径限制。
+
+多连接时，每个连接使用独立文件：`<name>.service.sock`、`<name>.ssh.sock`、`<name>.daemon.lock`、`<name>.daemon.log`。空名称或 `default` 使用无前缀的旧文件名，保持向后兼容。
 
 正常退出会清理 socket；崩溃后再次启动并取得进程锁时，会尝试关闭残留 SSH 主连接，再清理残留 socket。不要删除正在运行的服务的锁文件。
 
@@ -85,7 +155,7 @@ remote-shell / remote-shell-info / stop-remote-shell
 
 本地通信没有应用层认证，按第一版需求使用本机用户隔离的目录和 socket 权限。SSH 主机密钥使用 `accept-new`：首次连接记录新密钥，已知主机密钥变化时拒绝连接；保留 OpenSSH 的 known_hosts 校验。程序会关闭 agent/X11/端口转发及 LocalCommand。
 
-代码入口位于 `cmd/`，实现位于 `internal/app/`，没有第三方 Go 依赖。
+代码入口位于 `cmd/`，实现位于 `internal/app/`。TOML 配置解析使用 `github.com/BurntSushi/toml`，其余仅依赖标准库。
 
 ## 验证
 

@@ -13,31 +13,36 @@ import (
 )
 
 type config struct {
-	Host        string
-	User        string
-	Port        int
-	Identity    string
-	Password    string
-	HasPassword bool
-	Dir         string
-	SSH         string
-	Timeout     time.Duration
+	Name          string
+	Host          string
+	User          string
+	Port          int
+	Identity      string
+	Password      string
+	HasPassword   bool
+	Dir           string
+	SSH           string
+	Timeout       time.Duration
+	ShellOverride string // "cmd" or "powershell"; empty = auto-detect
 }
 
 type request struct {
 	Action  string `json:"action"`
+	Name    string `json:"name,omitempty"`
 	Command string `json:"command,omitempty"`
 }
 
 type packet struct {
-	Type  string          `json:"type"`
-	Data  []byte          `json:"data,omitempty"`
-	Code  int             `json:"code,omitempty"`
-	Error string          `json:"error,omitempty"`
-	Info  *connectionInfo `json:"info,omitempty"`
+	Type  string            `json:"type"`
+	Data  []byte            `json:"data,omitempty"`
+	Code  int               `json:"code,omitempty"`
+	Error string            `json:"error,omitempty"`
+	Info  *connectionInfo   `json:"info,omitempty"`
+	Infos []*connectionInfo `json:"infos,omitempty"`
 }
 
 type connectionInfo struct {
+	Name         string    `json:"name,omitempty"`
 	Connected    bool      `json:"connected"`
 	Host         string    `json:"host"`
 	User         string    `json:"user"`
@@ -50,6 +55,7 @@ type connectionInfo struct {
 	Architecture string    `json:"architecture,omitempty"`
 	Hostname     string    `json:"hostname,omitempty"`
 	Shell        string    `json:"shell,omitempty"`
+	DefaultShell string    `json:"default_shell,omitempty"`
 	Error        string    `json:"error,omitempty"`
 }
 
@@ -68,8 +74,53 @@ func runtimeDir() (string, error) {
 	return dir, nil
 }
 
+// Per-name path helpers. When name is "" or "default", use legacy filenames
+// (service.sock, daemon.lock, ssh.sock, daemon.log) for backward compatibility.
+
+func socketPath(dir, name string) string {
+	if name == "" || name == "default" {
+		return filepath.Join(dir, "service.sock")
+	}
+	return filepath.Join(dir, name+".service.sock")
+}
+
+func lockPath(dir, name string) string {
+	if name == "" || name == "default" {
+		return filepath.Join(dir, "daemon.lock")
+	}
+	return filepath.Join(dir, name+".daemon.lock")
+}
+
+func controlPath(dir, name string) string {
+	if name == "" || name == "default" {
+		return filepath.Join(dir, "ssh.sock")
+	}
+	return filepath.Join(dir, name+".ssh.sock")
+}
+
+func logPath(dir, name string) string {
+	if name == "" || name == "default" {
+		return filepath.Join(dir, "daemon.log")
+	}
+	return filepath.Join(dir, name+".daemon.log")
+}
+
+// checkPathLength verifies the socket path fits within the Unix sun_path limit.
+func checkPathLength(dir, name string) error {
+	p := socketPath(dir, name)
+	// 108 is the typical sun_path limit; leave margin for internal use.
+	if len(p) > 104 {
+		return fmt.Errorf("socket 路径过长（%d 字节，最多 104）: %s", len(p), p)
+	}
+	return nil
+}
+
 func dial(dir string) (net.Conn, error) {
-	c, err := net.DialTimeout("unix", filepath.Join(dir, "service.sock"), 2*time.Second)
+	return dialNamed(dir, "")
+}
+
+func dialNamed(dir, name string) (net.Conn, error) {
+	c, err := net.DialTimeout("unix", socketPath(dir, name), 2*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("无法连接本地服务，请先运行 start-remote-shell: %w", err)
 	}
@@ -77,18 +128,22 @@ func dial(dir string) (net.Conn, error) {
 }
 
 func exchange(action string) (packet, error) {
+	return exchangeNamed(action, "")
+}
+
+func exchangeNamed(action, name string) (packet, error) {
 	var p packet
 	dir, err := runtimeDir()
 	if err != nil {
 		return p, err
 	}
-	c, err := dial(dir)
+	c, err := dialNamed(dir, name)
 	if err != nil {
 		return p, err
 	}
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(12 * time.Second))
-	if err = json.NewEncoder(c).Encode(request{Action: action}); err != nil {
+	if err = json.NewEncoder(c).Encode(request{Action: action, Name: name}); err != nil {
 		return p, err
 	}
 	err = json.NewDecoder(c).Decode(&p)

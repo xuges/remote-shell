@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -23,8 +24,14 @@ func Start(args []string) int {
 		return runDaemon()
 	}
 	var cfg config
+	var configPath, connectionName string
+	allFlag := false
 	f := flag.NewFlagSet("start-remote-shell", flag.ContinueOnError)
-	f.StringVar(&cfg.Host, "host", "", "远端主机名、IP 或 SSH config 别名（必填）")
+	f.StringVar(&configPath, "config", "", "配置文件路径")
+	f.StringVar(&connectionName, "conn", "", "连接名称（TOML 配置中的名称）")
+	f.StringVar(&connectionName, "connection", "", "连接名称（-conn 的全称别名）")
+	f.BoolVar(&allFlag, "all", false, "启动配置文件中的所有连接")
+	f.StringVar(&cfg.Host, "host", "", "远端主机名、IP 或 SSH config 别名（无配置文件时必填）")
 	f.StringVar(&cfg.User, "user", "", "远端用户名；默认使用 SSH 配置")
 	f.IntVar(&cfg.Port, "port", 22, "SSH 端口")
 	f.StringVar(&cfg.Password, "password", "", "SSH 密码；也可设置 REMOTE_SHELL_PASSWORD")
@@ -36,59 +43,212 @@ func Start(args []string) int {
 		}
 		return 2
 	}
-	if f.NArg() != 0 || cfg.Host == "" || strings.HasPrefix(cfg.Host, "-") || strings.ContainsAny(cfg.Host, "\x00\r\n \t") {
-		return fail(fmt.Errorf("请用 -host 指定有效主机"))
+	if f.NArg() != 0 {
+		return fail(fmt.Errorf("start-remote-shell 不接受位置参数"))
+	}
+
+	// Validate --all is not combined with per-connection flags.
+	if allFlag {
+		used := connectionName != ""
+		f.Visit(func(v *flag.Flag) {
+			switch v.Name {
+			case "host", "user", "port", "password", "identity", "timeout", "conn", "connection":
+				used = true
+			}
+		})
+		if used {
+			return fail(fmt.Errorf("--all 不能与 -conn 等单连接参数同时使用"))
+		}
+	}
+
+	// Find and parse config file.
+	configFile, err := findConfig(configPath)
+	if err != nil {
+		return fail(err)
+	}
+	if configFile != "" && configPath != "" && configFile != configPath {
+		configFile = configPath
+	}
+
+	// --all mode: start every connection defined in the config file.
+	if allFlag {
+		if configFile == "" {
+			return fail(fmt.Errorf("没有找到配置文件，无法使用 --all"))
+		}
+		fc, err := loadConfigFile(configFile)
+		if err != nil {
+			return fail(err)
+		}
+		if len(fc.Connections) == 0 {
+			return fail(fmt.Errorf("配置文件中没有定义任何连接"))
+		}
+		var names []string
+		for name := range fc.Connections {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		ok, skip, failCount := 0, 0, 0
+		dir, _ := runtimeDir()
+		for _, name := range names {
+			// Check if already running.
+			p, err := exchangeNamed("info", name)
+			if err == nil && p.Info != nil && p.Info.Connected {
+				fmt.Printf("  [%s] 已在运行，跳过\n", name)
+				skip++
+				continue
+			}
+			tomlCfg, err := lookupConnection(fc, name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  [%s] 启动失败：%v\n", name, err)
+				failCount++
+				continue
+			}
+			tomlCfg.Dir = dir
+			if err := spawnDaemon(tomlCfg); err != nil {
+				fmt.Fprintf(os.Stderr, "  [%s] 启动失败：%v\n", name, err)
+				failCount++
+				continue
+			}
+			fmt.Printf("  [%s] %s:%d\n", name, tomlCfg.Host, tomlCfg.Port)
+			ok++
+		}
+		fmt.Printf("启动完成：成功 %d，跳过 %d，失败 %d\n", ok, skip, failCount)
+		if failCount > 0 {
+			return 1
+		}
+		return 0
+	}
+
+	// Single-connection mode.
+	if configFile != "" {
+		fc, err := loadConfigFile(configFile)
+		if err != nil {
+			return fail(err)
+		}
+		if connectionName == "" {
+			if len(fc.Connections) == 1 {
+				for name := range fc.Connections {
+					connectionName = name
+				}
+			} else if len(fc.Connections) > 1 {
+				return fail(fmt.Errorf("配置文件包含多个连接，请用 -conn 指定名称"))
+			} else {
+				return fail(fmt.Errorf("配置文件中没有定义任何连接"))
+			}
+		}
+		if err := validateName(connectionName); err != nil {
+			return fail(err)
+		}
+		cfg.Name = connectionName
+		tomlCfg, err := lookupConnection(fc, connectionName)
+		if err != nil {
+			return fail(err)
+		}
+		if cfg.Host == "" {
+			cfg.Host = tomlCfg.Host
+		}
+		if cfg.User == "" {
+			cfg.User = tomlCfg.User
+		}
+		if !isFlagSet(f, "port") {
+			cfg.Port = tomlCfg.Port
+		}
+		if cfg.Password == "" {
+			cfg.Password = tomlCfg.Password
+			cfg.HasPassword = tomlCfg.HasPassword
+		}
+		if cfg.Identity == "" {
+			cfg.Identity = tomlCfg.Identity
+		}
+		if !isFlagSet(f, "timeout") {
+			cfg.Timeout = tomlCfg.Timeout
+		}
+		if cfg.ShellOverride == "" {
+			cfg.ShellOverride = tomlCfg.ShellOverride
+		}
+	} else {
+		if cfg.Host == "" || strings.HasPrefix(cfg.Host, "-") || strings.ContainsAny(cfg.Host, "\x00\r\n \t") {
+			return fail(fmt.Errorf("请用 -host 指定有效主机，或创建配置文件"))
+		}
+		cfg.Name = connectionName
+	}
+
+	// Validate connection name.
+	if cfg.Name != "" {
+		if err := validateName(cfg.Name); err != nil {
+			return fail(err)
+		}
+	}
+
+	// Validate host and credentials.
+	if cfg.Host == "" || strings.HasPrefix(cfg.Host, "-") || strings.ContainsAny(cfg.Host, "\x00\r\n \t") {
+		return fail(fmt.Errorf("无效主机: %q", cfg.Host))
 	}
 	if cfg.Port < 1 || cfg.Port > 65535 || cfg.Timeout <= 0 {
 		return fail(fmt.Errorf("端口必须在 1–65535，超时必须大于零"))
 	}
-	f.Visit(func(v *flag.Flag) {
-		if v.Name == "password" {
-			cfg.HasPassword = true
-		}
-	})
+	if isFlagSet(f, "password") {
+		cfg.HasPassword = true
+	}
 	if !cfg.HasPassword {
 		cfg.Password, cfg.HasPassword = os.LookupEnv("REMOTE_SHELL_PASSWORD")
 	}
 	if strings.ContainsAny(cfg.Password, "\r\n") {
 		return fail(fmt.Errorf("密码不能包含换行符"))
 	}
+
+	if err := spawnDaemon(&cfg); err != nil {
+		return fail(err)
+	}
+	if cfg.Name != "" {
+		fmt.Printf("远程 Shell 已连接 [%s]：%s:%d\n", cfg.Name, cfg.Host, cfg.Port)
+	} else {
+		fmt.Printf("远程 Shell 已连接：%s:%d\n", cfg.Host, cfg.Port)
+	}
+	return 0
+}
+
+// spawnDaemon resolves runtime paths, creates the runtime directory, and
+// spawns a daemon process. It returns an error if any step fails.
+func spawnDaemon(cfg *config) error {
 	var err error
 	cfg.Dir, err = runtimeDir()
 	if err != nil {
-		return fail(err)
+		return err
+	}
+	if err := checkPathLength(cfg.Dir, cfg.Name); err != nil {
+		return err
 	}
 	cfg.SSH, err = exec.LookPath("ssh")
 	if err != nil {
-		return fail(fmt.Errorf("找不到本机 OpenSSH 客户端: %w", err))
+		return fmt.Errorf("找不到本机 OpenSSH 客户端: %w", err)
 	}
 	if cfg.Identity != "" {
 		cfg.Identity, err = filepath.Abs(cfg.Identity)
 		if err != nil {
-			return fail(err)
+			return err
 		}
 	}
 	if err := os.MkdirAll(cfg.Dir, 0700); err != nil {
-		return fail(err)
+		return err
 	}
 	if err := os.Chmod(cfg.Dir, 0700); err != nil {
-		return fail(err)
+		return err
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return fail(err)
+		return err
 	}
-	logFile, err := os.OpenFile(filepath.Join(cfg.Dir, "daemon.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logFile, err := os.OpenFile(logPath(cfg.Dir, cfg.Name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	defer logFile.Close()
 	cmd := exec.Command(exe, "--daemon")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	// Credentials cross an anonymous pipe, not daemon argv or the filesystem.
 	data, err := json.Marshal(cfg)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	cmd.Stdin = strings.NewReader(string(data))
 	cmd.Stderr = logFile
@@ -99,10 +259,10 @@ func Start(args []string) int {
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	if err := cmd.Start(); err != nil {
-		return fail(err)
+		return err
 	}
 	result := make(chan error, 1)
 	go func() {
@@ -122,23 +282,67 @@ func Start(args []string) int {
 	if err != nil {
 		cmd.Process.Signal(syscall.SIGTERM)
 		cmd.Wait()
-		return fail(err)
+		return err
 	}
 	cmd.Process.Release()
-	fmt.Printf("远程 Shell 已连接：%s:%d\n", cfg.Host, cfg.Port)
-	return 0
+	return nil
+}
+
+// isFlagSet checks if a flag was explicitly set by the user.
+func isFlagSet(f *flag.FlagSet, name string) bool {
+	found := false
+	f.Visit(func(v *flag.Flag) {
+		if v.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// parseConnectionFlag scans args for -conn/-connection/-name and returns it
+// plus the remaining args (without the flag and its value).
+func parseConnectionFlag(args []string) (string, []string) {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-conn" || args[i] == "--conn" ||
+			args[i] == "-connection" || args[i] == "--connection" ||
+			args[i] == "-name" || args[i] == "--name" {
+			name := args[i+1]
+			remaining := make([]string, 0, len(args)-2)
+			remaining = append(remaining, args[:i]...)
+			remaining = append(remaining, args[i+2:]...)
+			return name, remaining
+		}
+		if strings.HasPrefix(args[i], "-conn=") || strings.HasPrefix(args[i], "--conn=") ||
+			strings.HasPrefix(args[i], "-connection=") || strings.HasPrefix(args[i], "--connection=") ||
+			strings.HasPrefix(args[i], "-name=") || strings.HasPrefix(args[i], "--name=") {
+			parts := strings.SplitN(args[i], "=", 2)
+			name := parts[1]
+			remaining := make([]string, 0, len(args)-1)
+			remaining = append(remaining, args[:i]...)
+			remaining = append(remaining, args[i+1:]...)
+			return name, remaining
+		}
+	}
+	return "", args
 }
 
 func Execute(args []string) int {
+	connName, remaining := parseConnectionFlag(args)
+	args = remaining
+
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stdout, "用法：remote-shell 命令 [参数...]\n      remote-shell -c 'Shell 表达式'\n标准输入、标准输出、标准错误和退出码会转发；不分配终端。")
+		fmt.Fprintln(os.Stdout, "用法：remote-shell -conn 名称 命令 [参数...]\n      remote-shell -conn 名称 -c 'Shell 表达式'\n标准输入、标准输出、标准错误和退出码会转发；不分配终端。")
 		if len(args) == 0 {
 			return 2
 		}
 		return 0
 	}
+	if connName == "" {
+		return fail(fmt.Errorf("必须用 -conn 指定连接名称；可用 remote-shell-info --all 查看运行中的连接"))
+	}
 	command := ""
-	if args[0] == "-c" {
+	isCMode := args[0] == "-c"
+	if isCMode {
 		if len(args) != 2 {
 			return fail(fmt.Errorf("-c 需要一个完整的 Shell 表达式"))
 		}
@@ -156,12 +360,22 @@ func Execute(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	conn, err := dial(dir)
+
+	// Windows guard: non -c mode uses POSIX quoting which does not work on
+	// Windows default shells (cmd.exe / powershell.exe). Detect and advise.
+	if !isCMode {
+		p, err := exchangeNamed("info", connName)
+		if err == nil && p.Info != nil && p.Info.OS == "Windows_NT" {
+			return fail(fmt.Errorf("远端默认 Shell 是 Windows (%s)，请用 -c 模式编写对应 Shell 的命令：\n  cmd:    remote-shell -c 'dir C:\\\\'\n  powershell: remote-shell -c 'Get-Process'", p.Info.DefaultShell))
+		}
+	}
+
+	conn, err := dialNamed(dir, connName)
 	if err != nil {
 		return fail(err)
 	}
 	defer conn.Close()
-	if err := json.NewEncoder(conn).Encode(request{Action: "exec", Command: command}); err != nil {
+	if err := json.NewEncoder(conn).Encode(request{Action: "exec", Name: connName, Command: command}); err != nil {
 		return fail(err)
 	}
 	// Closing the client connection also cancels its SSH channel on the daemon.
@@ -228,6 +442,9 @@ func copyInput(conn net.Conn) {
 func Info(args []string) int {
 	f := flag.NewFlagSet("remote-shell-info", flag.ContinueOnError)
 	asJSON := f.Bool("json", false, "输出 JSON")
+	connName := f.String("conn", "", "指定连接名称")
+	f.StringVar(connName, "connection", "", "指定连接名称（-conn 的全称别名）")
+	allFlag := f.Bool("all", false, "列出所有连接")
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -237,7 +454,29 @@ func Info(args []string) int {
 	if f.NArg() != 0 {
 		return fail(fmt.Errorf("不支持位置参数"))
 	}
-	p, err := exchange("info")
+	if *allFlag {
+		return infoAll(*asJSON)
+	}
+	name := *connName
+	if name == "" {
+		// No flag: auto-select if single connection.
+		dir, err := runtimeDir()
+		if err != nil {
+			return fail(err)
+		}
+		names := scanConnections(dir)
+		if len(names) == 1 {
+			name = names[0]
+		} else if len(names) > 1 {
+			return fail(fmt.Errorf("存在多个连接，请用 -conn 指定名称"))
+		}
+		// If 0 names, try legacy single connection (empty name).
+	}
+	return infoOne(name, *asJSON)
+}
+
+func infoOne(name string, asJSON bool) int {
+	p, err := exchangeNamed("info", name)
 	if err != nil {
 		return fail(err)
 	}
@@ -245,7 +484,7 @@ func Info(args []string) int {
 		return fail(fmt.Errorf("服务返回了无效连接信息"))
 	}
 	i := p.Info
-	if *asJSON {
+	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(i); err != nil {
@@ -256,7 +495,14 @@ func Info(args []string) int {
 		if i.Connected {
 			status = "已连接"
 		}
-		fmt.Printf("连接状态：%s\n远端地址：%s@%s:%d\n系统版本：%s\n内核版本：%s\n架构：%s\n主机名：%s\nShell：%s\n服务 PID：%d\n启动时间：%s\n", status, i.User, i.Host, i.Port, i.OSVersion, i.Kernel, i.Architecture, i.Hostname, i.Shell, i.PID, i.StartedAt.Local().Format(time.RFC3339))
+		if i.Name != "" {
+			fmt.Printf("[%s] ", i.Name)
+		}
+		fmt.Printf("连接状态：%s\n远端地址：%s@%s:%d\n系统版本：%s\n内核版本：%s\n架构：%s\n主机名：%s\nShell：%s\n", status, i.User, i.Host, i.Port, i.OSVersion, i.Kernel, i.Architecture, i.Hostname, i.Shell)
+		if i.DefaultShell != "" && i.DefaultShell != i.Shell {
+			fmt.Printf("默认 Shell：%s\n", i.DefaultShell)
+		}
+		fmt.Printf("服务 PID：%d\n启动时间：%s\n", i.PID, i.StartedAt.Local().Format(time.RFC3339))
 		if i.Error != "" {
 			fmt.Fprintln(os.Stdout, "错误："+i.Error)
 		}
@@ -267,21 +513,125 @@ func Info(args []string) int {
 	return 0
 }
 
+func infoAll(asJSON bool) int {
+	dir, err := runtimeDir()
+	if err != nil {
+		return fail(err)
+	}
+	names := scanConnections(dir)
+	if len(names) == 0 {
+		if asJSON {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("没有运行中的连接")
+		}
+		return 1
+	}
+	if !asJSON {
+		fmt.Printf("运行中的连接（%d）：\n", len(names))
+	}
+	infos := make([]*connectionInfo, 0, len(names))
+	var lastErr int
+	for _, name := range names {
+		p, err := exchangeNamed("info", name)
+		if err != nil {
+			lastErr = 1
+			continue
+		}
+		if p.Info != nil {
+			infos = append(infos, p.Info)
+		}
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(infos); err != nil {
+			return fail(err)
+		}
+	} else {
+		for _, i := range infos {
+			status := "已断开"
+			if i.Connected {
+				status = "已连接"
+			}
+			fmt.Printf("  [%s] %s  %s@%s:%d  %s  shell=%s\n", i.Name, status, i.User, i.Host, i.Port, i.OSVersion, i.DefaultShell)
+		}
+	}
+	return lastErr
+}
+
+// scanConnections lists connection names by looking for *.service.sock files
+// in the runtime directory.
+func scanConnections(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".service.sock") {
+			names = append(names, strings.TrimSuffix(name, ".service.sock"))
+		}
+	}
+	// Also check legacy single-connection socket.
+	if _, err := os.Stat(filepath.Join(dir, "service.sock")); err == nil {
+		hasDefault := false
+		for _, n := range names {
+			if n == "default" || n == "" {
+				hasDefault = true
+				break
+			}
+		}
+		if !hasDefault {
+			names = append(names, "default")
+		}
+	}
+	return names
+}
+
 func Stop(args []string) int {
-	if len(args) != 0 {
-		if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-			fmt.Println("用法：stop-remote-shell")
+	f := flag.NewFlagSet("stop-remote-shell", flag.ContinueOnError)
+	connName := f.String("conn", "", "指定连接名称")
+	f.StringVar(connName, "connection", "", "指定连接名称（-conn 的全称别名）")
+	allFlag := f.Bool("all", false, "停止所有连接")
+	if err := f.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Println("用法：stop-remote-shell [-conn 名称] [--all]")
 			return 0
 		}
-		return fail(fmt.Errorf("stop-remote-shell 不接受参数"))
+		return 2
 	}
-	_, err := exchange("stop")
+	if f.NArg() != 0 {
+		return fail(fmt.Errorf("stop-remote-shell 不接受位置参数"))
+	}
+	if *allFlag {
+		return stopAll()
+	}
+	name := *connName
+	if name == "" {
+		dir, err := runtimeDir()
+		if err != nil {
+			return fail(err)
+		}
+		names := scanConnections(dir)
+		if len(names) == 1 {
+			name = names[0]
+		} else if len(names) > 1 {
+			return fail(fmt.Errorf("存在多个连接，请用 -conn 指定名称"))
+		}
+	}
+	return stopOne(name)
+}
+
+func stopOne(name string) int {
+	_, err := exchangeNamed("stop", name)
 	if err != nil {
 		return fail(err)
 	}
 	// Wait for cleanup and lock release so an immediate start is reliable.
 	dir, _ := runtimeDir()
-	lock, err := os.OpenFile(filepath.Join(dir, "daemon.lock"), os.O_RDWR, 0600)
+	lock, err := os.OpenFile(lockPath(dir, name), os.O_RDWR, 0600)
 	if err != nil {
 		return fail(err)
 	}
@@ -297,6 +647,30 @@ func Stop(args []string) int {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	fmt.Println("远程 Shell 服务已停止")
+	if name != "" {
+		fmt.Printf("远程 Shell 服务 [%s] 已停止\n", name)
+	} else {
+		fmt.Println("远程 Shell 服务已停止")
+	}
 	return 0
+}
+
+func stopAll() int {
+	dir, err := runtimeDir()
+	if err != nil {
+		return fail(err)
+	}
+	names := scanConnections(dir)
+	if len(names) == 0 {
+		fmt.Println("没有运行中的连接")
+		return 0
+	}
+	var lastErr int
+	for _, name := range names {
+		if rc := stopOne(name); rc != 0 {
+			fmt.Fprintf(os.Stderr, "remote-shell: 停止 %s 失败\n", name)
+			lastErr = 1
+		}
+	}
+	return lastErr
 }
