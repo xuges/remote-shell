@@ -245,7 +245,7 @@ func spawnDaemon(cfg *config) error {
 	}
 	defer logFile.Close()
 	cmd := exec.Command(exe, "--daemon")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = daemonSysProcAttr()
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return err
@@ -265,11 +265,13 @@ func spawnDaemon(cfg *config) error {
 		return err
 	}
 	result := make(chan error, 1)
+	selfReported := false
 	go func() {
 		var p packet
 		err := json.NewDecoder(stdout).Decode(&p)
 		if err == nil && p.Error != "" {
 			err = fmt.Errorf("%s", p.Error)
+			selfReported = true
 		}
 		result <- err
 	}()
@@ -280,7 +282,16 @@ func spawnDaemon(cfg *config) error {
 	}
 	stdout.Close()
 	if err != nil {
-		cmd.Process.Signal(syscall.SIGTERM)
+		// A daemon that sent an error packet has already cancelled its own
+		// signal context and is cleaning up (removing sockets, reaping its
+		// SSH master). Sending SIGTERM then would be a *second* signal after
+		// cancellation, which signal.NotifyContext turns into an immediate
+		// process termination that skips its deferred cleanup. Only signal it
+		// when the daemon reported nothing (local startup timeout) and would
+		// otherwise keep running.
+		if !selfReported {
+			cmd.Process.Signal(syscall.SIGTERM)
+		}
 		cmd.Wait()
 		return err
 	}
@@ -454,59 +465,107 @@ func Info(args []string) int {
 	if f.NArg() != 0 {
 		return fail(fmt.Errorf("不支持位置参数"))
 	}
-	if *allFlag {
-		return infoAll(*asJSON)
-	}
+	_ = allFlag // accepted for compatibility; bare invocation already lists all
 	name := *connName
 	if name == "" {
-		// No flag: auto-select if single connection.
-		dir, err := runtimeDir()
-		if err != nil {
-			return fail(err)
-		}
-		names := scanConnections(dir)
-		if len(names) == 1 {
-			name = names[0]
-		} else if len(names) > 1 {
-			return fail(fmt.Errorf("存在多个连接，请用 -conn 指定名称"))
-		}
-		// If 0 names, try legacy single connection (empty name).
+		// No -conn: show every connection defined in the config plus any
+		// running daemons, each with its real (connected/disconnected) state.
+		return infoAll(*asJSON)
 	}
 	return infoOne(name, *asJSON)
+}
+
+// configCfgByName returns the config entry for a connection name, or nil if
+// the config file is absent, unparsable, or does not define the name.
+func configCfgByName(name string) *config {
+	configFile, err := findConfig("")
+	if err != nil || configFile == "" {
+		return nil
+	}
+	fc, err := loadConfigFile(configFile)
+	if err != nil {
+		return nil
+	}
+	cc, ok := fc.Connections[name]
+	if !ok {
+		return nil
+	}
+	cfg, err := connectionFromTOML(name, cc)
+	if err != nil {
+		return nil
+	}
+	return cfg
+}
+
+// allConfigNames lists connection names defined in the config file, sorted.
+// Returns nil when there is no config file.
+func allConfigNames() []string {
+	configFile, err := findConfig("")
+	if err != nil || configFile == "" {
+		return nil
+	}
+	fc, err := loadConfigFile(configFile)
+	if err != nil {
+		return nil
+	}
+	if len(fc.Connections) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(fc.Connections))
+	for n := range fc.Connections {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// printInfo renders one connection info to stdout in human or JSON form.
+func printInfo(i *connectionInfo, asJSON bool) {
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(i)
+		return
+	}
+	status := "已断开"
+	if i.Connected {
+		status = "已连接"
+	}
+	if i.Name != "" {
+		fmt.Printf("[%s] ", i.Name)
+	}
+	fmt.Printf("连接状态：%s\n远端地址：%s@%s:%d\n系统版本：%s\n内核版本：%s\n架构：%s\n主机名：%s\nShell：%s\n", status, i.User, i.Host, i.Port, i.OSVersion, i.Kernel, i.Architecture, i.Hostname, i.Shell)
+	if i.DefaultShell != "" && i.DefaultShell != i.Shell {
+		fmt.Printf("默认 Shell：%s\n", i.DefaultShell)
+	}
+	if i.PID != 0 {
+		fmt.Printf("服务 PID：%d\n启动时间：%s\n", i.PID, i.StartedAt.Local().Format(time.RFC3339))
+	}
+	if i.Error != "" {
+		fmt.Fprintln(os.Stdout, "错误："+i.Error)
+	}
 }
 
 func infoOne(name string, asJSON bool) int {
 	p, err := exchangeNamed("info", name)
 	if err != nil {
+		// Daemon not running. If the connection is defined in the config,
+		// report it as 未连接 instead of failing outright.
+		if cfg := configCfgByName(name); cfg != nil {
+			ci := &connectionInfo{Name: name, Host: cfg.Host, User: cfg.User, Port: cfg.Port, Error: "服务未运行，请先运行 start-remote-shell"}
+			printInfo(ci, asJSON)
+			return 1
+		}
 		return fail(err)
 	}
 	if p.Info == nil {
 		return fail(fmt.Errorf("服务返回了无效连接信息"))
 	}
 	i := p.Info
-	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(i); err != nil {
-			return fail(err)
-		}
-	} else {
-		status := "已断开"
-		if i.Connected {
-			status = "已连接"
-		}
-		if i.Name != "" {
-			fmt.Printf("[%s] ", i.Name)
-		}
-		fmt.Printf("连接状态：%s\n远端地址：%s@%s:%d\n系统版本：%s\n内核版本：%s\n架构：%s\n主机名：%s\nShell：%s\n", status, i.User, i.Host, i.Port, i.OSVersion, i.Kernel, i.Architecture, i.Hostname, i.Shell)
-		if i.DefaultShell != "" && i.DefaultShell != i.Shell {
-			fmt.Printf("默认 Shell：%s\n", i.DefaultShell)
-		}
-		fmt.Printf("服务 PID：%d\n启动时间：%s\n", i.PID, i.StartedAt.Local().Format(time.RFC3339))
-		if i.Error != "" {
-			fmt.Fprintln(os.Stdout, "错误："+i.Error)
-		}
+	if i.Name == "" {
+		i.Name = name
 	}
+	printInfo(i, asJSON)
 	if !i.Connected {
 		return 1
 	}
@@ -518,29 +577,52 @@ func infoAll(asJSON bool) int {
 	if err != nil {
 		return fail(err)
 	}
-	names := scanConnections(dir)
+	// Union of config-defined connections and currently running sockets,
+	// so disconnected (not-started) connections are shown too.
+	have := map[string]bool{}
+	for _, n := range allConfigNames() {
+		have[n] = true
+	}
+	for _, n := range scanConnections(dir) {
+		have[n] = true
+	}
+	names := make([]string, 0, len(have))
+	for n := range have {
+		names = append(names, n)
+	}
+	sort.Strings(names)
 	if len(names) == 0 {
 		if asJSON {
 			fmt.Println("[]")
 		} else {
-			fmt.Println("没有运行中的连接")
+			fmt.Println("没有定义或运行中的连接")
 		}
 		return 1
 	}
 	if !asJSON {
-		fmt.Printf("运行中的连接（%d）：\n", len(names))
+		fmt.Printf("连接（%d）：\n", len(names))
 	}
 	infos := make([]*connectionInfo, 0, len(names))
-	var lastErr int
+	lastErr := 0
 	for _, name := range names {
 		p, err := exchangeNamed("info", name)
-		if err != nil {
-			lastErr = 1
+		if err == nil && p.Info != nil {
+			i := p.Info
+			if i.Name == "" {
+				i.Name = name
+			}
+			infos = append(infos, i)
+			if !i.Connected {
+				lastErr = 1
+			}
 			continue
 		}
-		if p.Info != nil {
-			infos = append(infos, p.Info)
+		ci := &connectionInfo{Name: name, Connected: false, Error: "服务未运行"}
+		if cfg := configCfgByName(name); cfg != nil {
+			ci.Host, ci.User, ci.Port = cfg.Host, cfg.User, cfg.Port
 		}
+		infos = append(infos, ci)
+		lastErr = 1
 	}
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -554,7 +636,20 @@ func infoAll(asJSON bool) int {
 			if i.Connected {
 				status = "已连接"
 			}
-			fmt.Printf("  [%s] %s  %s@%s:%d  %s  shell=%s\n", i.Name, status, i.User, i.Host, i.Port, i.OSVersion, i.DefaultShell)
+			line := fmt.Sprintf("  [%s] %s", i.Name, status)
+			if i.User != "" && i.Host != "" {
+				line += fmt.Sprintf("  %s@%s:%d", i.User, i.Host, i.Port)
+			}
+			if i.OSVersion != "" {
+				line += "  " + i.OSVersion
+			}
+			if i.DefaultShell != "" {
+				line += "  shell=" + i.DefaultShell
+			}
+			if !i.Connected && i.Error != "" {
+				line += "  (" + i.Error + ")"
+			}
+			fmt.Println(line)
 		}
 	}
 	return lastErr
@@ -638,8 +733,8 @@ func stopOne(name string) int {
 	defer lock.Close()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-			syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		if err := flockTryLock(lock); err == nil {
+			flockUnlock(lock)
 			break
 		}
 		if time.Now().After(deadline) {

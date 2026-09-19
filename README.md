@@ -2,13 +2,14 @@
 
 用 Go 和本机 OpenSSH 执行远程命令。启动一次后台服务，后续命令复用同一条 SSH 连接；远端无需安装代理或本项目程序。
 
-`remote-shell` 本身不做命令解释或兼容层——所有命令都原样发送到远端，由远端的默认 Shell 执行。`remote-shell-info` 在启动和查询时自动探测远端操作系统、Shell 类型等信息，供脚本和 AI 判断远端环境后选用正确的命令。本机需要 Go 1.22+（编译时）和 OpenSSH 8.9+；远端需要开启 SSH 服务。Go 代码只依赖标准库。真实 SSH 集成测试在 Linux 上验证，macOS 仅验证交叉编译。
+`remote-shell` 本身不做命令解释或兼容层——所有命令都原样发送到远端，由远端的默认 Shell 执行。`remote-shell-info` 在启动和查询时自动探测远端操作系统、Shell 类型等信息，供脚本和 AI 判断远端环境后选用正确的命令。本机需要 Go 1.22+（编译时）和 OpenSSH 8.9+；远端需要开启 SSH 服务。真实 SSH 集成测试在 Linux 上验证，macOS/Windows 验证交叉编译。预编译发布产物面向无 Go 工具链用户，见[发布与插件](#发布与 ai 编程插件)。
 
 ## 构建和使用
 
 ```sh
-make build
+make build          # VERSION=v1.0.0, 注入 --version; 可覆盖: make build VERSION=v1.1.0
 export PATH="$PWD/bin:$PATH"
+make dist           # 交叉编译 6 平台 tar.gz/zip + sha256sums.txt 到 dist/
 ```
 
 ### 单连接（旧模式，向后兼容）
@@ -22,7 +23,7 @@ stop-remote-shell
 
 ### 多连接（TOML 配置文件）
 
-在 `~/.config/remote-shell/config.toml`（或 `./remote-shell.toml`）中定义多个连接：
+在 `~/.remote-shell/config.toml`（或 `./remote-shell.toml`）中定义多个连接：
 
 ```toml
 [connections.prod]
@@ -70,7 +71,7 @@ stop-remote-shell -conn prod
 stop-remote-shell -all          # 停止所有连接
 ```
 
-配置文件查找顺序：`-config PATH` > `$REMOTE_SHELL_CONFIG` > `~/.config/remote-shell/config.toml` > `./remote-shell.toml`。密码可明文写在 TOML 中（本机可信环境），也可通过 `-password` 或 `REMOTE_SHELL_PASSWORD` 环境变量提供。CLI 参数优先于配置文件中的值。
+配置文件查找顺序：`-config PATH` > `$REMOTE_SHELL_CONFIG` > `~/.remote-shell/config.toml` > `./remote-shell.toml`。密码可明文写在 TOML 中（本机可信环境），也可通过 `-password` 或 `REMOTE_SHELL_PASSWORD` 环境变量提供。CLI 参数优先于配置文件中的值。
 
 ### Windows 远端
 
@@ -155,13 +156,43 @@ remote-shell / remote-shell-info / stop-remote-shell
 
 本地通信没有应用层认证，按第一版需求使用本机用户隔离的目录和 socket 权限。SSH 主机密钥使用 `accept-new`：首次连接记录新密钥，已知主机密钥变化时拒绝连接；保留 OpenSSH 的 known_hosts 校验。程序会关闭 agent/X11/端口转发及 LocalCommand。
 
-代码入口位于 `cmd/`，实现位于 `internal/app/`。TOML 配置解析使用 `github.com/BurntSushi/toml`，其余仅依赖标准库。
+代码入口位于 `cmd/`，实现位于 `internal/app/`。TOML 配置解析使用 `github.com/BurntSushi/toml`，Windows 文件锁使用 `golang.org/x/sys`，其余依赖标准库。
+
+## 发布与 AI 编程插件
+
+预编译发布产物面向无 Go 工具链的用户。推 `v*` tag 触发 GitHub Actions（`.github/workflows/release.yml`）：跑测试、构建 `make dist`、上传 `remote-shell-vX.Y.Z-<os>-<arch>.tar.gz/.zip` 及 `sha256sums.txt` 到 GitHub Release。
+
+插件（codex / opencode / claude code）以共享的 skill + 安装脚本分发，装在用户本机并复用同一套 `remote-shell` 二进制与 `~/.remote-shell`：
+
+```text
+plugins/
+  skills-canonical/          # remote-shell + remote-computer-use 两份 skill 的唯一来源
+  bin/bootstrap.sh|ps1       # 下载并校验预编译二进制到 ~/.remote-shell/bin（无需 Go）
+  codex/remote-shell/        # Agent Plugins 可移植插件 (plugin.json)
+  claude/remote-shell/       # Claude Code 插件 (.claude-plugin/plugin.json)
+  opencode/remote-shell/     # OpenCode 插件 (remote-shell.ts 自定义工具 + shell.env 注入 PATH)
+.claude-plugin/marketplace.json   # Claude 分发入口 "remote-shell-plugins"
+```
+
+```sh
+make plugins-sync   # canonical → 三处适配器 + .opencode/skills 同步
+make plugins-lint   # frontmatter/命名/副本一致性/清单 JSON 校验
+```
+
+各宿主安装与首次配置：
+- **Codex**：`codex plugins install ./plugins/codex/remote-shell`
+- **Claude Code**：`claude --plugin-dir ./plugins/claude/remote-shell`；或 `/plugin marketplace add <repo>` 后 `/plugin install remote-shell@remote-shell-plugins`
+- **OpenCode**：复制 `plugins/opencode/remote-shell` 到 `~/.config/opencode/plugins/`（技能另见 `.opencode/skills/`）
+
+首次使用任其运行 skill 中的 Setup：`bootstrap.sh` 下载并校验二进制到 `~/.remote-shell/bin`，配置连接写入 `~/.remote-shell/config.toml`。
 
 ## 验证
 
 ```sh
 make test              # 单元测试、race 检测、go vet
 make integration-test  # 使用真实 OpenSSH 服务端的集成测试
+make plugins-lint      # 插件树校验
+make dist              # 交叉编译 + 校验和
 ```
 
 集成测试需要 Linux、Python 3、Go、OpenSSH 服务端，以及 root 或可免密运行的 sudo。脚本创建临时测试账户和密钥，在随机本机回环端口启动独立 sshd，并在结束时删除账户和临时文件；不会修改系统 sshd 配置和当前用户的 known_hosts。

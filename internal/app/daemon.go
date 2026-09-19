@@ -52,11 +52,11 @@ func runDaemon() (result int) {
 		return 1
 	}
 	defer lock.Close()
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err = flockTryLock(lock); err != nil {
 		report(fmt.Errorf("已有服务运行，请先运行 stop-remote-shell"))
 		return 1
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer flockUnlock(lock)
 	// A daemon killed with SIGKILL can leave its SSH child alive. Under the
 	// exclusive lock, close that old master before replacing its control socket.
 	cp := controlPath(cfg.Dir, cfg.Name)

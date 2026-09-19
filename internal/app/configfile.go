@@ -54,7 +54,7 @@ func loadConfigFile(path string) (*FileConfig, error) {
 
 // findConfig resolves the config file path using:
 // 1. explicitPath (--config flag)  2. REMOTE_SHELL_CONFIG env
-// 3. ~/.config/remote-shell/config.toml  4. ./remote-shell.toml
+// 3. ~/.remote-shell/config.toml  4. ./remote-shell.toml
 func findConfig(explicitPath string) (string, error) {
 	if explicitPath != "" {
 		abs, err := filepath.Abs(explicitPath)
@@ -77,7 +77,7 @@ func findConfig(explicitPath string) (string, error) {
 		return abs, nil
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		p := filepath.Join(home, ".config", "remote-shell", "config.toml")
+		p := filepath.Join(home, ".remote-shell", "config.toml")
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
 		}

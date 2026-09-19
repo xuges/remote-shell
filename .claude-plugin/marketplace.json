@@ -1,0 +1,17 @@
+{
+  "name": "remote-shell-plugins",
+  "owner": {
+    "name": "xuges@qq.com"
+  },
+  "plugins": [
+    {
+      "name": "remote-shell",
+      "source": "./plugins/claude/remote-shell",
+      "description": "Run commands, manage persistent SSH connections, and control remote desktops over SSH",
+      "version": "1.0.0",
+      "author": {
+        "name": "xuges@qq.com"
+      }
+    }
+  ]
+}

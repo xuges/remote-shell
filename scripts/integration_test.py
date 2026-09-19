@@ -33,7 +33,7 @@ def main():
     temp = Path(tempfile.mkdtemp(prefix="rsh-test-", dir="/tmp"))
     temp.chmod(0o755)
     # Isolate both the runtime dir and config discovery (HOME) from the
-    # invoking user so a real ~/.config/remote-shell/config.toml does not
+    # invoking user so a real ~/.remote-shell/config.toml does not
     # interfere with the legacy single-connection test flow.
     home = temp / "home"
     home.mkdir()
@@ -64,7 +64,7 @@ def main():
         p = cli("start-remote-shell", "-host=127.0.0.1", f"-port={port}",
                 f"-user={account}", "-timeout=5s", *auth, check=check)
         if p.returncode == 0:
-            daemon_pid = json.loads(cli("remote-shell-info", "-json").stdout)["pid"]
+            daemon_pid = json.loads(cli("remote-shell-info", "-conn", "default", "-json").stdout)["pid"]
         return p
 
     def stop():
@@ -129,7 +129,7 @@ LogLevel VERBOSE
         assert not (temp / "run/service.sock").exists()
         print("PASS failed password and startup cleanup", flush=True)
         start(f"-password={password}")
-        info = json.loads(cli("remote-shell-info", "-json").stdout)
+        info = json.loads(cli("remote-shell-info", "-conn", "default", "-json").stdout)
         assert info["connected"] and info["user"] == account
         assert info["os"] == "Linux" and info["os_version"] and info["kernel"]
         assert info["shell"] == "/bin/sh" and info["architecture"]
@@ -197,7 +197,7 @@ LogLevel VERBOSE
         master_pid = run(["pgrep", "-P", str(daemon_pid), "ssh"]).stdout.strip().decode()
         os.kill(int(master_pid), signal.SIGKILL)
         time.sleep(0.2)
-        disconnected = cli("remote-shell-info", "-json", check=False)
+        disconnected = cli("remote-shell-info", "-conn", "default", "-json", check=False)
         assert disconnected.returncode == 1 and not json.loads(disconnected.stdout)["connected"]
         assert rs("true", check=False).returncode == 255
         stop()
