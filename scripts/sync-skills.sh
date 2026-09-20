@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Syncs the canonical skills (plugins/skills-canonical) and install scripts
 # (plugins/bin) into the three per-host plugin directories plus the repo's own
-# .opencode/skills. Codex rejects symlinks, so this copies files.
+# .opencode/skills. Copy complete skill trees so each package is self-contained.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,4 +26,4 @@ echo "synced canonical skills + install scripts into:"
 for dest in "${DESTINATIONS[@]}"; do
   echo "  $dest"
 done
-echo "bumped plugin scripts/VERSION from $(cat "$SRC_BIN/VERSION")"
+echo "synced binary version $(cat "$SRC_BIN/VERSION")"

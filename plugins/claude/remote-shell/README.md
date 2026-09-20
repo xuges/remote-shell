@@ -1,46 +1,29 @@
-# remote-shell (Claude Code plugin)
+# remote-shell for Claude Code
 
-Run commands, manage persistent SSH connections, and control remote desktops
-over SSH from inside Claude Code. Binaries are prebuilt release downloads
-installed by `scripts/bootstrap.sh` — no Go toolchain required.
-
-## Components
-
-- `skills/remote-shell` — connection lifecycle, command modes, Windows
-  `cmd`/`powershell`, security rules.
-- `skills/remote-computer-use` — screenshots and keyboard/mouse input on remote
-  desktops.
-- `scripts/bootstrap.sh` / `bootstrap.ps1` — install the four binaries into
-  `~/.remote-shell/bin` with sha256 verification.
-
-## Install (local / via marketplace)
-
-Local testing:
+Install both skills and the verified CLI binaries:
 
 ```sh
-claude --plugin-dir ./plugins/claude/remote-shell
+curl -fsSL https://raw.githubusercontent.com/xuges/remote-shell/main/install.sh | bash -s -- --agent claude-code
 ```
 
-Distribution is handled by the repo root `.claude-plugin/marketplace.json`
-(marketplace "remote-shell-plugins"):
+From a checkout, run `bash install.sh --agent claude-code` at the repository root.
+The skills go to `~/.claude/skills/` (or `$CLAUDE_CONFIG_DIR/skills/`), binaries to
+`~/.remote-shell/bin/`. Open a new Claude Code session and ask it to use the skills.
+See [INSTALL.md](../../../INSTALL.md) for configuration and validation.
 
-```
+## Optional plugin installation
+
+For a Claude Code plugin workflow, add this repository's marketplace in Claude:
+
+```text
 /plugin marketplace add xuges/remote-shell
 /plugin install remote-shell@remote-shell-plugins
 ```
 
-## First run (once per machine)
+The plugin includes the same two skills. Install binaries once with the bundled
+`scripts/bootstrap.sh` or `bootstrap.ps1`, resolved from the installed package.
+Local plugin testing uses `claude --plugin-dir ./plugins/claude/remote-shell`
+from the repository root. Choose one skill installation method to avoid duplicate
+skill entries.
 
-1. Ensure OpenSSH client 8.9+ (`ssh -V`).
-2. Ask Claude to run setup, or run the bundled script yourself:
-   ```sh
-   "$PWD/plugins/claude/remote-shell/scripts/bootstrap.sh"
-   ```
-3. Confirm `~/.remote-shell/bin` is on PATH; configure connections in
-   `~/.remote-shell/config.toml`.
-
-Skills reference the script via `${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap.sh`.
-
-## License
-
-MIT
+Generated `skills/` and `scripts/` are synchronized with `make plugins-sync`.

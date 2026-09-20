@@ -1,50 +1,35 @@
-# remote-shell (OpenCode plugin)
+# remote-shell for OpenCode
 
-Run commands, manage persistent SSH connections, and control remote desktops
-over SSH from inside OpenCode. Binaries are prebuilt releases downloaded by
-`bootstrap.sh` — no Go toolchain required.
-
-## Components
-
-- `remote-shell.ts` — plugin that:
-  - runs `scripts/bootstrap.sh` on load so the binaries are ready;
-  - prepends `~/.remote-shell/bin` to PATH for every shell (via the
-    `shell.env` hook);
-  - registers `start_remote_shell`, `remote_shell`, `remote_shell_info` and
-    `stop_remote_shell` tools.
-- `skills/remote-shell` and `skills/remote-computer-use` — reusable instructions
-  loaded via the skill tool for connection and desktop-work flows.
-
-## Install
-
-OpenCode's local plugin loader picks up plugin modules (`.ts`/`.js`) placed
-flat inside the plugin directory, so copy the module and its `scripts/`
-sidecar directly:
+Install both skills and the verified CLI binaries:
 
 ```sh
-# global scope (all projects)
-cp remote-shell.ts               "$HOME/.config/opencode/plugins/remote-shell.ts"
-cp -r scripts                    "$HOME/.config/opencode/plugins/scripts"
-mkdir -p "$HOME/.config/opencode/skills/remote-shell" \
-         "$HOME/.config/opencode/skills/remote-computer-use"
-cp skills/remote-shell/SKILL.md          "$HOME/.config/opencode/skills/remote-shell/"
-cp skills/remote-computer-use/SKILL.md   "$HOME/.config/opencode/skills/remote-computer-use/"
-
-# or project scope: use .opencode/plugins/ and the repo's .opencode/skills/
+curl -fsSL https://raw.githubusercontent.com/xuges/remote-shell/main/install.sh | bash -s -- --agent opencode
 ```
 
-Restart OpenCode. The plugin then:
-- runs `scripts/bootstrap.sh` on load (installs binaries to
-  `~/.remote-shell/bin`; skips silently when already present);
-- prepends `~/.remote-shell/bin` to PATH for every shell (`shell.env`);
-- registers `start_remote_shell`, `remote_shell`, `remote_shell_info` and
-  `stop_remote_shell` tools.
+From a checkout, run `bash install.sh --agent opencode` at the repository root.
+Skills go to `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/`, binaries to
+`~/.remote-shell/bin/`. Open a new OpenCode session and ask it to use remote-shell.
+The skills invoke the CLI through the shell tool; no extra tool registration is
+needed. See [INSTALL.md](../../../INSTALL.md) for setup and validation.
 
-First use of each tool triggers an OpenCode permission prompt; approve it (or
-allow `remote_*` in `opencode.json` permissions to skip prompts).
+## Optional custom tools
 
-Connection config: `~/.remote-shell/config.toml`.
+`remote-shell.ts` supplies `start_remote_shell`, `remote_shell`,
+`remote_shell_info`, and `stop_remote_shell`, plus a PATH hook. For users who
+want those additional tools, copy the module and its scripts sidecar from the
+repository root after running the installer:
 
-## License
+```sh
+oc_plugins="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins"
+mkdir -p "$oc_plugins/remote-shell-scripts"
+cp plugins/opencode/remote-shell/remote-shell.ts "$oc_plugins/remote-shell.ts"
+cp plugins/opencode/remote-shell/scripts/* "$oc_plugins/remote-shell-scripts/"
+```
 
-MIT
+Restart OpenCode to load the module. Its bootstrap uses the installed package's
+pinned binary version. For screenshots or other binary output, use the shell
+CLI with file redirection; these custom tools return text. For long commands,
+use a shell execution tool with a resumable process handle: the custom command
+tool has a five-minute timeout.
+
+Generated `skills/` and `scripts/` are synchronized with `make plugins-sync`.

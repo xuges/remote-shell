@@ -26,6 +26,9 @@ jobs:
       - name: Plugin lint
         run: make plugins-lint
 
+      - name: Installer test
+        run: make installer-test
+
       - name: Build release assets
         run: make dist VERSION=${GITHUB_REF_NAME}
 

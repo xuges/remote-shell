@@ -1,0 +1,14 @@
+# Copy to ~/.remote-shell/config.toml and replace the example values.
+# Keep identity absolute: TOML does not expand ~ or $HOME.
+[connections.dev]
+host = "server.example.com"
+user = "deploy"
+port = 22
+# identity = "/home/you/.ssh/id_ed25519"
+timeout = "20s"
+
+# Add other connections as needed:
+# [connections.win]
+# host = "windows.example.com"
+# user = "operator"
+# shell = "powershell" # The actual OpenSSH default shell: cmd or powershell.

@@ -1,12 +1,12 @@
 GO ?= go
 BIN_DIR ?= bin
 DIST_DIR ?= dist
-VERSION ?= v1.0.0
+VERSION ?= v1.1.0
 COMMANDS := start-remote-shell remote-shell remote-shell-info stop-remote-shell
 # For .exe names inside the windows package we append the .exe suffix at build time.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: build dist test integration-test plugins-sync plugins-lint clean
+.PHONY: build dist test installer-test integration-test plugins-sync plugins-lint clean
 
 build:
 	@mkdir -p $(BIN_DIR)
@@ -41,8 +41,11 @@ test:
 integration-test: build
 	python3 scripts/integration_test.py
 
+installer-test:
+	python3 scripts/installer_test.py
+
 plugins-sync:
-	PLUGIN_VERSION=$(VERSION) scripts/sync-skills.sh
+	scripts/sync-skills.sh
 
 plugins-lint:
 	scripts/lint-plugins.sh

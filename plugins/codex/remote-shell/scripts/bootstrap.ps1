@@ -1,54 +1,66 @@
-# remote-shell PowerShell installer for Windows hosts.
-# Downloads prebuilt release binaries, verifies sha256, installs to
-# ~/.remote-shell\bin. No Go toolchain required.
-#
-# Usage:
-#   powershell -ExecutionPolicy Bypass -File bootstrap.ps1 [[-Version] v1.0.0|latest]
+# Download and verify the four CLI binaries for Windows.
 param(
     [string]$Version = $(Get-Content -Raw "$PSScriptRoot\VERSION").Trim(),
-    [string]$Prefix = "$HOME\.remote-shell"
+    [string]$Prefix = $(if ($env:REMOTE_SHELL_PREFIX) { $env:REMOTE_SHELL_PREFIX } else { "$HOME\.remote-shell" })
 )
 
 $ErrorActionPreference = 'Stop'
 $Commands = @('start-remote-shell', 'remote-shell', 'remote-shell-info', 'stop-remote-shell')
 $Repo = 'xuges/remote-shell'
-$Installdir = Join-Path $Prefix 'bin'
-
-function TestSha256([string]$file, [string]$sumsFile) {
-    $expected = (Get-Content $sumsFile | Where-Object { $_ -match [regex]::Escape((Split-Path $file -Leaf)) }) -split '\s+' | Select-Object -First 1
-    if (-not $expected) { return $false }
-    $actual = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
-    return $actual -eq $expected.ToLowerInvariant()
-}
+$InstallDir = Join-Path $Prefix 'bin'
+Get-Command ssh -ErrorAction Stop | Out-Null
 
 if ($Version -eq 'latest') {
-    $releases = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
-    $Version = $releases.tag_name
+    $Version = (Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest").tag_name
 }
+if ($Version -notmatch '^v[0-9][A-Za-z0-9._-]*$') { throw "Invalid release version: $Version" }
 
-$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+$ready = $true
+foreach ($name in $Commands) {
+    $exe = Join-Path $InstallDir "$name.exe"
+    if (-not (Test-Path $exe -PathType Leaf)) { $ready = $false; break }
+    if ((& $exe --version) -ne "$name $Version" -or $LASTEXITCODE -ne 0) { $ready = $false; break }
+}
+if ($ready) { Write-Host "[bootstrap] binaries ready: $InstallDir ($Version)"; return }
+
+$nativeArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+switch ($nativeArch) {
+    'ARM64' { $arch = 'arm64' }
+    'AMD64' { $arch = 'amd64' }
+    default { throw "Unsupported architecture: $nativeArch" }
+}
 $stem = "remote-shell-$Version-windows-$arch"
 $base = if ($env:REMOTE_SHELL_DIST_BASE_URL) { $env:REMOTE_SHELL_DIST_BASE_URL }
         else { "https://github.com/$Repo/releases/download/$Version" }
-
-New-Item -ItemType Directory -Force -Path $Installdir | Out-Null
-$tmp = Join-Path ([System.IO.Path]::GetTempPath()) "rs-install-$([guid]::NewGuid())"
-New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+$tmp = Join-Path ([IO.Path]::GetTempPath()) "rs-install-$([guid]::NewGuid())"
+New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
     $pkg = Join-Path $tmp "$stem.zip"
     $sums = Join-Path $tmp 'sha256sums.txt'
     Invoke-WebRequest "$base/$stem.zip" -OutFile $pkg
     Invoke-WebRequest "$base/sha256sums.txt" -OutFile $sums
-    if (-not (TestSha256 $pkg $sums)) { throw "checksum mismatch for $stem.zip — refusing to install" }
+    $matchesForAsset = @(foreach ($line in Get-Content $sums) {
+        $parts = $line.Trim() -split '\s+'
+        if ($parts.Count -eq 2 -and $parts[1].TrimStart('*') -eq "$stem.zip") { $parts[0] }
+    })
+    if ($matchesForAsset.Count -ne 1 -or $matchesForAsset[0] -notmatch '^[0-9a-fA-F]{64}$') {
+        throw "Missing or ambiguous checksum for $stem.zip"
+    }
+    if ((Get-FileHash $pkg -Algorithm SHA256).Hash -ne $matchesForAsset[0]) {
+        throw "Checksum mismatch for $stem.zip; nothing installed"
+    }
     Expand-Archive -Path $pkg -DestinationPath $tmp
-    Get-ChildItem (Join-Path $tmp $stem) -Filter '*.exe' | ForEach-Object {
-        Copy-Item $_.FullName $Installdir -Force
+    foreach ($name in $Commands) {
+        $exe = Join-Path (Join-Path $tmp $stem) "$name.exe"
+        if (-not (Test-Path $exe -PathType Leaf)) { throw "Package missing executable: $name" }
+        if ((& $exe --version) -ne "$name $Version" -or $LASTEXITCODE -ne 0) { throw "Unexpected executable version: $name" }
     }
-    Write-Host "[bootstrap] installed $Version into $Installdir"
-    $inPath = ($env:PATH -split ';') -contains $Installdir
-    if (-not $inPath) {
-        Write-Host "[bootstrap] add to your user PATH: setx PATH \"$Installdir;$env:PATH\""
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    foreach ($name in $Commands) {
+        Copy-Item (Join-Path (Join-Path $tmp $stem) "$name.exe") $InstallDir -Force
     }
+    Write-Host "[bootstrap] installed $Version into $InstallDir"
+    Write-Host '[bootstrap] Use the absolute executable paths, or add the bin directory to PATH for this session.'
 }
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

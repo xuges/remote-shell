@@ -4,12 +4,14 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { homedir } from "node:os"
 import { delimiter, join } from "node:path"
+import { existsSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 
-const INSTALL_DIR = join(homedir(), ".remote-shell", "bin")
+const INSTALL_DIR = join(process.env.REMOTE_SHELL_PREFIX || join(homedir(), ".remote-shell"), "bin")
 const execFileAsync = promisify(execFile)
 
 function cli(name: string) {
-  return join(INSTALL_DIR, name)
+  return join(INSTALL_DIR, process.platform === "win32" ? `${name}.exe` : name)
 }
 
 async function run(bin: string, args: string[], timeoutMs: number) {
@@ -20,11 +22,14 @@ async function run(bin: string, args: string[], timeoutMs: number) {
   return (stdout || "") + (stderr ? `\n[stderr]\n${stderr}` : "")
 }
 
-export const RemoteShell: Plugin = async ({ $ }) => {
+export const RemoteShell: Plugin = async () => {
   // Ensure prebuilt binaries exist (prebuilt download; no Go toolchain needed).
-  const bootScript = new URL("./scripts/bootstrap.sh", import.meta.url).pathname
+  const bootName = process.platform === "win32" ? "bootstrap.ps1" : "bootstrap.sh"
+  const sidecar = fileURLToPath(new URL(`./remote-shell-scripts/${bootName}`, import.meta.url))
+  const bootScript = existsSync(sidecar) ? sidecar : fileURLToPath(new URL(`./scripts/${bootName}`, import.meta.url))
   try {
-    await $`bash ${bootScript}`.quiet()
+    await execFileAsync(process.platform === "win32" ? "powershell.exe" : "bash",
+      process.platform === "win32" ? ["-NoProfile", "-File", bootScript] : [bootScript])
   } catch {
     // Binary may already be present; the shell.env hook and tools fall back
     // to absolute paths and surface real errors if truly missing.
