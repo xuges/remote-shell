@@ -15,11 +15,10 @@ check_frontmatter() {
   grep -q '^description:' "$f" || { echo "lint-error: $f missing description"; fail=1; }
 }
 check_frontmatter "$SRC/remote-shell/SKILL.md" remote-shell
-check_frontmatter "$SRC/remote-computer-use/SKILL.md" remote-computer-use
 
 expect="$ROOT/plugins/codex/remote-shell/skills:$ROOT/plugins/claude/remote-shell/skills:$ROOT/plugins/opencode/remote-shell/skills:$ROOT/.opencode/skills"
 for dir in ${expect//:/ }; do
-  for s in remote-shell remote-computer-use; do
+  for s in remote-shell; do
     diff -r "$SRC/$s" "$dir/$s" >/dev/null 2>&1 \
       || { echo "lint-error: $dir/$s differs from canonical"; fail=1; }
   done

@@ -1,13 +1,12 @@
 # remote-shell
 
-给 AI 一个稳定的远程命令与桌面操作入口。通过 SSH 连接 Linux、macOS、Windows，在 Codex、OpenCode、Claude Code 中执行命令、传输文件、查看截图和操作远程应用。
+给 AI 一个稳定的远程命令入口。通过 SSH 连接 Linux、macOS、Windows，在 Codex、OpenCode、Claude Code 中执行命令、传输文件。
 
-启动一次连接，后续命令复用 SSH 通道。远端无需安装 remote-shell 代理；命令执行只需 SSH，桌面操作还需要可访问的图形会话及对应截图、输入工具。
+启动一次连接，后续命令复用 SSH 通道。远端无需安装 remote-shell 代理。
 
 | 技能 | 用途 |
 | --- | --- |
 | `remote-shell` | 连接管理、远程构建与测试、日志排查、文件传输、长任务跟踪 |
-| `remote-computer-use` | 观察远程截图、定位控件、键鼠输入、验证浏览器和桌面应用的操作结果 |
 
 ## 安装
 
@@ -26,17 +25,15 @@ curl -fsSL https://raw.githubusercontent.com/xuges/remote-shell/main/install.sh 
 
 省略 `--agent` 会识别本机已安装的客户端；`--agent all` 一次安装到三种客户端。需要 Bash、curl、tar、OpenSSH 客户端和 `sha256sum` 或 `shasum`。
 
-安装器会下载并校验本机平台的四个命令，安装两份完整技能及参考文档，最后检查命令版本。重复运行即可更新技能；被替换的技能会备份，连接配置保持原样。
+安装器会下载并校验本机平台的四个命令，安装完整技能及参考文档，最后检查命令版本。重复运行即可更新技能；被替换的技能会备份，连接配置保持原样。
 
 安装完成后，新开一个 AI 会话即可提出任务，例如：
 
 > 使用 remote-shell 连接 dev，在 /srv/app 运行测试并检查失败原因。
->
-> 使用 remote-computer-use 查看 dev 的桌面，打开浏览器检查页面布局。
 
 也可以直接把这句话发给 AI：
 
-> 请阅读 https://raw.githubusercontent.com/xuges/remote-shell/main/INSTALL.md ，为当前客户端安装 remote-shell 和 remote-computer-use，并验证安装结果。
+> 请阅读 https://raw.githubusercontent.com/xuges/remote-shell/main/INSTALL.md ，为当前客户端安装 remote-shell，并验证安装结果。
 
 [完整安装指南](INSTALL.md)包含 AI 执行步骤、安装目录、更新、Windows 原生安装与故障处理。
 
@@ -106,18 +103,7 @@ remote-shell -conn win -c 'dir C:\'
 
 配置中的 `shell = "powershell"` 或 `shell = "cmd"` 可声明实际默认 Shell，省略则自动探测。此配置不会更改远端 OpenSSH 的 Shell。复杂 PowerShell 脚本、引号处理和二进制传输见[命令执行指南](plugins/skills-canonical/remote-shell/references/execution.md)。
 
-### 远程桌面
-
-AI 按“截图 → 观察 → 操作 → 再截图验证”的流程工作。桌面能否控制取决于会话和权限：
-
-| 远端 | 条件 |
-| --- | --- |
-| Linux X11 | 实际 DISPLAY/XAUTHORITY、截图工具和 xdotool 等输入工具 |
-| Linux Wayland | 当前 compositor 支持的截图和输入接口 |
-| macOS | 可访问的 Aqua 会话、Screen Recording 与 Accessibility 授权 |
-| Windows | 命令确实运行在可操作目标桌面的会话中；SSH 服务会话常与桌面隔离 |
-
-已解锁桌面不等于 SSH 进程有权访问该桌面。[桌面操作指南](docs/computer-use.md)提供各平台命令、坐标缩放、文本输入与排障方法。
+SSH 可执行不等于可访问桌面；本项目不提供桌面操作能力。
 
 ## 排障
 
@@ -134,7 +120,7 @@ AI 按“截图 → 观察 → 操作 → 再截图验证”的流程工作。�
 
 ## 开发与验证
 
-编译需要 Go 1.22+；运行依赖本机 OpenSSH。真实 SSH 集成测试在 Linux 上执行，macOS/Windows 还提供交叉编译产物；桌面能力需在目标图形会话中验证。
+编译需要 Go 1.22+；运行依赖本机 OpenSSH。真实 SSH 集成测试在 Linux 上执行，macOS/Windows 还提供交叉编译产物。
 
 ```sh
 make build              # 四个 CLI → bin/

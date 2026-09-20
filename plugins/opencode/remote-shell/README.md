@@ -1,6 +1,6 @@
 # remote-shell for OpenCode
 
-Install both skills and the verified CLI binaries:
+Install the skill and the verified CLI binaries:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/xuges/remote-shell/main/install.sh | bash -s -- --agent opencode

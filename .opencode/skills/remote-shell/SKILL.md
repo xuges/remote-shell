@@ -1,6 +1,6 @@
 ---
 name: remote-shell
-description: Run commands and transfer files on a remote Linux, macOS, or Windows host over SSH using named persistent connections. Use for remote builds, tests, logs, services, and connection troubleshooting. For screenshot-driven desktop interaction, use remote-computer-use.
+description: Run commands and transfer files on a remote Linux, macOS, or Windows host over SSH using named persistent connections. Use for remote builds, tests, logs, services, and connection troubleshooting.
 ---
 
 # Remote shell

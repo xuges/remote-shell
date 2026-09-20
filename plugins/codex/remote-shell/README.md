@@ -1,6 +1,6 @@
 # remote-shell for Codex
 
-Install both `remote-shell` and `remote-computer-use`, including their reference
+Install `remote-shell`, including its reference
 files and the verified CLI binaries:
 
 ```sh

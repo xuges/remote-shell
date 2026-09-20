@@ -1,6 +1,6 @@
-# 安装 remote-shell 与 remote-computer-use
+# 安装 remote-shell
 
-这份文档可以直接交给 AI 执行。目标是把两个技能及四个 CLI 安装到 **AI 运行所在的机器**，然后验证技能文件与命令。远端主机只需提供 SSH；GUI 任务另需可操作的桌面会话。
+这份文档可以直接交给 AI 执行。目标是把技能及四个 CLI 安装到 **AI 运行所在的机器**，然后验证技能文件与命令。远端主机只需提供 SSH。
 
 ## 一行安装
 
@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/xuges/remote-shell/main/install.sh 
 
 1. 确认当前 AI 客户端与本机 OS，优先使用上面的对应命令。若用户指定安装范围/路径，遵循用户选择。WSL 中的安装属于 WSL 内运行的客户端，不会安装到 Windows 原生客户端。
 2. 运行安装器并检查退出状态。若仓库已存在，使用本地脚本即可，无需重新克隆。缺少依赖时报告具体缺项，按用户已有授权补齐。
-3. 检查下表对应目录中的两个 `SKILL.md` 及其 `references/`，并运行四个二进制的 `--version`。不要把“成功下载一个脚本”当作安装完成。
+3. 检查下表对应目录中的 `SKILL.md` 及其 `references/`，并运行四个二进制的 `--version`。不要把“成功下载一个脚本”当作安装完成。
 4. 用绝对路径调用 `remote-shell-info --all -json`。退出码 1 可能只是尚无连接或连接未运行；看 JSON 内容。`[]` 不意味着安装失败。
 5. 只有任务还包括连接机器时，才继续配置/验证 SSH。复用已有连接，或只询问缺少的主机、用户名、端口、认证方式。不要求用户在聊天中发送私钥或明文密码。优先用已有 SSH 密钥/agent。
 6. 若需要新配置，参考 `config.example.toml`，保留已有条目，使用绝对密钥路径。对自定义配置设置 `REMOTE_SHELL_CONFIG`，再启动目标连接并查询系统信息。只在用户授权的目标上执行只读验证命令。
@@ -34,9 +34,9 @@ curl -fsSL https://raw.githubusercontent.com/xuges/remote-shell/main/install.sh 
 
 | 内容 | 默认路径 | 约定 |
 | --- | --- | --- |
-| Codex 两个技能 | `~/.agents/skills/remote-{shell,computer-use}/` | [Codex 技能目录](https://learn.chatgpt.com/docs/build-skills) |
-| OpenCode 两个技能 | `~/.config/opencode/skills/remote-{shell,computer-use}/` | [OpenCode 技能目录](https://opencode.ai/docs/skills/)；支持 `XDG_CONFIG_HOME` |
-| Claude Code 两个技能 | `~/.claude/skills/remote-{shell,computer-use}/` | [Claude Code 技能目录](https://code.claude.com/docs/en/skills)；支持 `CLAUDE_CONFIG_DIR` |
+| Codex 技能 | `~/.agents/skills/remote-shell/` | [Codex 技能目录](https://learn.chatgpt.com/docs/build-skills) |
+| OpenCode 技能 | `~/.config/opencode/skills/remote-shell/` | [OpenCode 技能目录](https://opencode.ai/docs/skills/)；支持 `XDG_CONFIG_HOME` |
+| Claude Code 技能 | `~/.claude/skills/remote-shell/` | [Claude Code 技能目录](https://code.claude.com/docs/en/skills)；支持 `CLAUDE_CONFIG_DIR` |
 | 四个 CLI | `~/.remote-shell/bin/` | `start-remote-shell`、`remote-shell`、`remote-shell-info`、`stop-remote-shell` |
 | 配置模板 | `~/.remote-shell/config.example.toml` | 不覆盖实际连接配置 |
 | 连接配置 | `~/.remote-shell/config.toml` | 由用户或获授权的 AI 配置 |
@@ -61,7 +61,7 @@ bash /path/to/remote-shell/install.sh --agent opencode --source /path/to/remote-
 
 使用自定义 `--prefix` 时，为后续 AI 进程设置相同的 `REMOTE_SHELL_PREFIX`，或让 AI 使用安装器输出的绝对命令路径。此选项只改变二进制、模板和备份位置；不会改变技能发现目录，也不会改变 CLI 的连接配置查找规则。自定义配置使用 `REMOTE_SHELL_CONFIG`。
 
-需要回退技能时，可把安装器输出的备份中对应技能目录恢复到原位置。卸载时仅删除所选客户端的这两个技能目录；确认没有其他客户端使用后，再删除 `~/.remote-shell/bin`。保留连接配置和备份，除非用户明确要求一并删除。
+需要回退技能时，可把安装器输出的备份中对应技能目录恢复到原位置。卸载时仅删除所选客户端的该技能目录；确认没有其他客户端使用后，再删除 `~/.remote-shell/bin`。保留连接配置和备份，除非用户明确要求一并删除。
 
 ## Windows 原生客户端
 
@@ -71,7 +71,7 @@ bash /path/to/remote-shell/install.sh --agent opencode --source /path/to/remote-
 & .\plugins\bin\bootstrap.ps1
 $skillRoot = Join-Path $HOME '.agents\skills'
 New-Item -ItemType Directory -Force $skillRoot | Out-Null
-foreach ($name in @('remote-shell', 'remote-computer-use')) {
+foreach ($name in @('remote-shell')) {
     $dest = Join-Path $skillRoot $name
     if (Test-Path $dest) { throw "Skill already exists: $dest. Back it up before replacing it." }
     Copy-Item -Recurse (Join-Path '.\plugins\skills-canonical' $name) $dest
@@ -81,7 +81,7 @@ foreach ($name in @('remote-shell', 'remote-computer-use')) {
 
 OpenCode 将 `$skillRoot` 改为 `$HOME\.config\opencode\skills`（设置了 `XDG_CONFIG_HOME` 时使用其 `opencode\skills`）；Claude Code 改为 `$HOME\.claude\skills`（设置了 `CLAUDE_CONFIG_DIR` 时使用其 `skills`）。已有技能先备份整个目录再替换。需要 OpenSSH 客户端；脚本执行策略受组织管理时遵循现有策略。
 
-Windows 发布包不等于桌面已可操作：原生 SSH 连接复用及桌面访问需在实际环境中验证，GUI 还受交互会话隔离限制，见 [Windows 操作指南](plugins/skills-canonical/remote-computer-use/references/windows.md)。
+Windows 发布包提供原生 SSH 命令复用能力。SSH 可执行不等于可访问桌面；本项目不提供桌面操作能力。
 
 ## 常见问题
 

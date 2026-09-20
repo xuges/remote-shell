@@ -1,6 +1,6 @@
 # remote-shell for Claude Code
 
-Install both skills and the verified CLI binaries:
+Install the skill and the verified CLI binaries:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/xuges/remote-shell/main/install.sh | bash -s -- --agent claude-code
@@ -20,7 +20,7 @@ For a Claude Code plugin workflow, add this repository's marketplace in Claude:
 /plugin install remote-shell@remote-shell-plugins
 ```
 
-The plugin includes the same two skills. Install binaries once with the bundled
+The plugin includes the same skill. Install binaries once with the bundled
 `scripts/bootstrap.sh` or `bootstrap.ps1`, resolved from the installed package.
 Local plugin testing uses `claude --plugin-dir ./plugins/claude/remote-shell`
 from the repository root. Choose one skill installation method to avoid duplicate

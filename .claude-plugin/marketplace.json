@@ -7,7 +7,7 @@
     {
       "name": "remote-shell",
       "source": "./plugins/claude/remote-shell",
-      "description": "Run commands, manage persistent SSH connections, and control remote desktops over SSH",
+      "description": "Run commands and transfer files on remote hosts over SSH using named persistent connections",
       "version": "1.1.0",
       "author": {
         "name": "xuges@qq.com"

@@ -13,8 +13,8 @@ Usage: bash install.sh [--agent auto|codex|opencode|claude-code|all] [options]
   --source DIR    Install skills and bootstrap from a local checkout
   -h, --help      Show this help
 
-Installs both remote-shell and remote-computer-use. Existing changed skill
-folders are backed up. Connection config and shell startup files are untouched.
+Installs the remote-shell skill. An existing changed skill
+folder is backed up. Connection config and shell startup files are untouched.
 EOF
 }
 
@@ -84,7 +84,7 @@ main() {
     tar -xzf "$tmp/source.tar.gz" -C "$tmp/source" --strip-components=1
     source="$tmp/source"
   fi
-  for skill in remote-shell remote-computer-use; do
+  for skill in remote-shell; do
     [ -f "$source/plugins/skills-canonical/$skill/SKILL.md" ] || die "Missing skill in source: $skill"
   done
   [ -f "$source/plugins/bin/bootstrap.sh" ] || die 'Missing binary installer in source'
@@ -98,7 +98,7 @@ main() {
 
   for dest in "${destinations[@]}"; do
     mkdir -p "$dest"
-    for skill in remote-shell remote-computer-use; do
+    for skill in remote-shell; do
       if [ ! -L "$dest/$skill" ] && [ -d "$dest/$skill" ] && diff -qr "$source/plugins/skills-canonical/$skill" "$dest/$skill" >/dev/null 2>&1; then
         log "Already current: $dest/$skill"
         continue

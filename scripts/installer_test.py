@@ -13,7 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMANDS = ('start-remote-shell', 'remote-shell', 'remote-shell-info', 'stop-remote-shell')
-SKILLS = ('remote-shell', 'remote-computer-use')
+SKILLS = ('remote-shell',)
 VERSION = (ROOT / 'plugins/bin/VERSION').read_text().strip()
 BASH = shutil.which('bash')
 
@@ -141,17 +141,24 @@ class InstallerTest(unittest.TestCase):
         self.run_install('--agent', 'codex')
         directory = self.home / '.agents/skills'
         (directory / 'remote-shell/local-notes.txt').write_text('keep these notes')
-        target = self.root / 'external skill'
-        (directory / 'remote-computer-use').rename(target)
-        (directory / 'remote-computer-use').symlink_to(target, target_is_directory=True)
         self.run_install('--agent', 'codex')
         self.assert_skills(directory)
-        self.assertFalse((directory / 'remote-computer-use').is_symlink())
         backups = list((self.prefix / 'backups').iterdir())
         self.assertEqual(len(backups), 1)
         backed_up = backups[0] / str(directory).lstrip('/')
         self.assertEqual((backed_up / 'remote-shell/local-notes.txt').read_text(), 'keep these notes')
-        self.assertTrue((backed_up / 'remote-computer-use').is_symlink())
+        target = self.root / 'external skill'
+        target.mkdir()
+        (target / 'SKILL.md').write_text('external skill sentinel')
+        shutil.rmtree(directory / 'remote-shell')
+        (directory / 'remote-shell').symlink_to(target, target_is_directory=True)
+        self.run_install('--agent', 'codex')
+        self.assert_skills(directory)
+        self.assertFalse((directory / 'remote-shell').is_symlink())
+        backups = list((self.prefix / 'backups').iterdir())
+        symlink_backups = [b for b in backups
+                           if (b / str(directory).lstrip('/') / 'remote-shell').is_symlink()]
+        self.assertEqual(len(symlink_backups), 1)
         self.assertTrue((target / 'SKILL.md').is_file())
 
     def test_custom_prefix_and_client_config_directories(self):

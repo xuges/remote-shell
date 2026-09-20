@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "remote-shell",
   "version": "1.1.0",
-  "description": "Run commands, manage persistent SSH connections, and control remote desktops from Linux, macOS, or Windows hosts over SSH",
+  "description": "Run commands and transfer files on remote Linux, macOS, or Windows hosts over SSH using named persistent connections",
   "author": "xuges@qq.com",
   "license": "MIT",
   "homepage": "https://github.com/xuges/remote-shell",
