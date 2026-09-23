@@ -37,7 +37,13 @@ export const RemoteShell: Plugin = async () => {
 
   return {
     "shell.env": async (_input, output) => {
-      output.env.PATH = [INSTALL_DIR, output.env.PATH].filter(Boolean).join(delimiter)
+      // output.env starts empty: it is NOT the process environment. Fall back
+      // to process.env.PATH so we prepend instead of replacing it (replacing
+      // breaks ls/grep/git and everything else on PATH).
+      const base = output.env.PATH || process.env.PATH || "/usr/bin:/bin"
+      const parts = base.split(delimiter).filter(Boolean)
+      if (!parts.includes(INSTALL_DIR)) parts.unshift(INSTALL_DIR)
+      output.env.PATH = parts.join(delimiter)
     },
 
     tool: {
